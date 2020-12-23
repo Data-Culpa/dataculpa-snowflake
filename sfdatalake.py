@@ -32,6 +32,7 @@ import os
 import uuid
 import sqlite3
 import sys
+import yaml
 
 import snowflake.connector
 
@@ -41,88 +42,170 @@ from dataculpa import DataCulpaValidator
 #logging.basicConfig(format='%(asctime)s %(message)s', level=logging.WARN)
 
 
+def FatalError(rc, message):
+    sys.stderr.write(message)
+    sys.stderr.write("\n")
+    sys.stderr.flush()
+    os._exit(rc)
+    return
+
 class Config:
     def __init__(self):
-        self.snowflake_user    = os.environ.get('SNOWFLAKE_USER')
-        self.snowflake_pass    = os.environ.get('SNOWFLAKE_PASSWORD')
-        self.snowflake_account = os.environ.get('SNOWFLAKE_ACCOUNT')
-        self.snowflake_region  = os.environ.get('SNOWFLAKE_REGION')
-        self.snowflake_db      = os.environ.get('SNOWFLAKE_DB')
-        self.snowflake_wh      = os.environ.get('SNOWFLAKE_WH')
-
-        #self.snowflake_ = os.environ.get('SNOWFLAKE_USER')
-        #self.file_ext         = os.environ.get('AZURE_FILE_EXT')
-        #self.storage_cache_db = os.environ.get('AZURE_STORAGE_CACHE')
-        #self.error_log        = os.environ.get('AZURE_ERROR_LOG', "error.log")
-
-        # Data Culpa parameters
-        self.pipeline_name      = os.environ.get('DC_PIPELINE_NAME')
-        self.pipeline_env       = os.environ.get('DC_PIPELINE_ENV', 'default')
-        self.pipeline_stage     = os.environ.get('DC_PIPELINE_STAGE', None)
-        self.pipeline_version   = os.environ.get('DC_PIPELINE_VERSION', 'default')
-        self.dc_host            = os.environ.get('DC_HOST')
-        self.dc_port            = os.environ.get('DC_PORT')
-        self.dc_protocol        = os.environ.get('DC_PROTOCOL')
-        self.dc_secret          = os.environ.get('DC_SECRET')
-
-        self.table_is_stage = os.environ.get('DC_TABLE_IS_STAGE', False)
-
-        if self.table_is_stage:
-            assert self.pipeline_stage is None, "cannot set both DC_TABLE_IS_STAGE and DC_DIR_IS_STAGE"
+        self._d = { 
+                    'dataculpa_controller': {
+                        'host': 'dataculpa-api',
+                        'port': 7777,
+                        #'url': 'http://192.168.1.13:7777',
+                        'api-secret': 'set in .env file $DC_CONTROLLER_SECRET; not here',
+                    },
+                    'snowflake': {
+                        'user': 'user',
+                        'account': 'account',
+                        'region': 'region',
+                        'database': 'database',
+                        'warehouse': 'warehouse',
+                        'table_list': []
+                    },
+                    'dataculpa_pipeline': {
+                        'name': '[required] pipeline_name',
+                        'environment': '[optional] environment, e.g., test or production',
+                        'stage': '[optional] a string representing the stage of this part of the pipeline',
+                        'table_is_stage': True, # use the table name as the stage name
+                        'version': '[optional] a string representing the version of implementation'
+                    }
+        }
 
 
-sf_context = None
+    def save(self, fname):
+        if os.path.exists(fname):
+            print("%s exists already; rename it before creating a new example config." % fname)
+            os._exit(1)
+            return
 
-def ConnectToSnowflake():
-    global gConfig
-    global sf_context
+        f = open(fname, 'w')
+        yaml.safe_dump(self._d, f, default_flow_style=False)
+        f.close()
+        return
 
+    def load(self, fname):
+        with open(fname, "r") as f:
+            #print(f)
+            self._d = yaml.load(f, yaml.SafeLoader)
+            #print(self._d)
+        
+        # No--just keep this in main.
+        #dotenv.load_dotenv(env_file)
+
+        # FIXME: error checking?
+        # dump to stderror, non-zero exit... maybe need an error path to push to Data Culpa.
+        return
+
+    def load_env(self, env_file):
+        return
+
+    def get_snowflake(self):
+        return self._d.get('snowflake')
+    
+    def get_sf_user(self):
+        return self.get_snowflake().get('user')
+    
+    def get_sf_account(self):
+        return self.get_snowflake().get('account')
+    
+    def get_sf_password(self):
+        return os.environ.get('SNOWFLAKE_PASSWORD')
+    
+    def get_sf_region(self):
+        return self.get_snowflake().get('region')
+
+    def get_sf_database(self):
+        return self.get_snowflake().get('database')
+
+    def get_sf_warehouse(self):
+        return self.get_snowflake().get('warehouse')
+
+    def get_sf_table_list(self):
+        return self.get_snowflake().get('table_list')
+
+    def get_controller(self):
+        return self._d.get('dataculpa_controller')
+    
+    def get_pipeline(self):
+        return self._d.get('dataculpa_pipeline')
+
+    def get_pipeline_name(self):
+        return self.get_pipeline().get('name')
+
+    def get_pipeline_table_is_stage(self):
+        return self.get_pipeline().get('table_is_stage', False)
+
+    def connect_controller(self, pipeline_name):
+        cc = self.get_controller_config()
+        host = cc.get('host')
+        port = cc.get('port')
+
+        # FIXME: load Data Culpa secret
+        v = DataCulpaValidator(pipeline_name,
+                               protocol=DataCulpaValidator.HTTP,
+                               dc_host=host,
+                               dc_port=port)
+        return v
+
+def ConnectToSnowflake(config):
     print("connecting")
     # Gets the version
     sf_context = snowflake.connector.connect(
-        user=gConfig.snowflake_user,
-        password=gConfig.snowflake_pass,
-        account=gConfig.snowflake_account
+        user=config.get_sf_user(),
+        password=config.get_sf_password(),
+        account=config.get_sf_account()
         ) # FIXME: add region?
-    cs = sf_context.cursor()
+#    cs = sf_context.cursor()
+
+    return sf_context
+
+
+def UseWarehouseDatabaseFromConfig(config, cursor):
+    try:
+        if config.get_sf_warehouse() is not None:
+            print("@@@ using warehouse")
+            cursor.execute("USE warehouse %s" % config.get_sf_warehouse())
+        if config.get_sf_database() is not None:
+            print("@@@ using database")
+            cursor.execute("USE database %s" % config.get_sf_database())
+
+    except Exception as e:
+        print(e)
+        os._exit(1)
+
+    return
+
+def DiscoverTables(config, sf_context):
 
     table_names = []
 
-    try:
-        if gConfig.snowflake_wh is not None:
-            print("@@@ using warehouse")
-            cs.execute("USE warehouse %s" % gConfig.snowflake_wh)
-        if gConfig.snowflake_db is not None:
-            print("@@@ using warehouse")
-            cs.execute("USE database %s" % gConfig.snowflake_db)
-
-        cs.execute('show tables')
-        r = cs.fetchall()
-        #print("show tables = __%s__" % r)
-        for rr in r:
-            tname = rr[1] # FIXME: obviously there must be a better way
-            table_names.append(tname)
-        # endfor
-    except Exception as e:
-        print(e)
-        # !
-        # something.
-    finally: 
-        cs.close()
+    cs = sf_context.cursor()
+    UseWarehouseDatabaseFromConfig(config, cs)
+    cs.execute('show tables')
+    r = cs.fetchall()
+    #print("show tables = __%s__" % r)
+    for rr in r:
+        tname = rr[1] # FIXME: obviously there must be a better way
+        table_names.append(tname)
+    # endfor
+    cs.close()
 
     return table_names
 
-def FetchTable(table):
-    global sf_context
-
+def FetchTable(table, config, sf_context):
     cs = sf_context.cursor()
+    UseWarehouseDatabaseFromConfig(config, cs)
     #print("\n\n\n@@@ TABLE __%s__" % table)
     #cs.execute('SELECT table_schema FROM INFORMATION_SCHEMA.TABLES WHERE table_name=%s' % table)
     #cs.execute("select * from %s" % table)
 
     print("@@@ FETCHTABLE %s @@@" % table)
 
-    cs.execute('show columns in ' + table)
+    cs.execute('show columns in public.test_table') #' + table)
 
     field_types = {}
     field_names = []
@@ -178,6 +261,46 @@ def CloseSnowflake():
 
 gConfig = None
 
+
+def do_init(filename):
+    print("Initialize new file")
+    config = Config()
+    config.save(filename)
+    return
+
+def do_discover(filename):
+    print("discover with config from file %s" % filename)
+    config = Config()
+    config.load(filename)
+    sf_context = ConnectToSnowflake(config)
+
+    table_names = DiscoverTables(config, sf_context)
+    print(table_names)
+
+    return
+
+def do_test(filename):
+    print("test with config from file %s" % filename)
+    return
+
+def do_run(filename):
+    print("run with config from file %s" % filename)
+    config = Config()
+    config.load(filename)
+    
+    # get the table list...
+    table_list = config.get_sf_table_list()
+    if len(table_list) == 0:
+        FatalError(1, "no tables listed to triage!")
+        return
+
+    sf_context = ConnectToSnowflake(config)
+
+    for t in table_list:
+        FetchTable(t, config, sf_context)
+    
+    return
+
 def main():
     global gConfig
 
@@ -188,21 +311,40 @@ def main():
     ap.add_argument("--init", help="Init a yaml config file to fill in.")
     ap.add_argument("--discover", help="Run the specified configuration to discover available databases/tables in Snowflake")
     ap.add_argument("--test", help="Test the configuration specified.")
-    
+    ap.add_argument("--run", help="Normal operation: run the pipeline")
     args = ap.parse_args()
 
     env_path = ".env"
     if args.env:
         env_path = args.env
     if not os.path.exists(env_path):
-        sys.stderr.write("Error: missing env file at %s\n" % env_path)
+        sys.stderr.write("Error: missing env file at %s\n" % os.path.realpath(env_path))
         os._exit(1)
         return
     # endif
 
-    dotenv.load_dotenv()
+    dotenv.load_dotenv(env_path)
 
-    gConfig = Config()
+    if args.init:
+        do_init(args.init)
+        return
+    elif args.discover:
+        do_discover(args.discover)
+        return
+    elif args.test:
+        do_test(args.test)
+        return
+    elif args.run:
+        do_run(args.run)
+        return
+
+    ap.print_help()
+    return
+
+if __name__ == "__main__":
+    main()
+
+"""
     table_names = ConnectToSnowflake()
 
     for t in table_names:
@@ -210,8 +352,5 @@ def main():
 
     if sf_context is not None:
         sf_context.close()
-    return
 
-if __name__ == "__main__":
-    main()
-
+"""
