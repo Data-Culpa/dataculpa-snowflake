@@ -139,8 +139,10 @@ class Config:
     def get_pipeline_table_is_stage(self):
         return self.get_pipeline().get('table_is_stage', False)
 
-    def connect_controller(self, pipeline_name):
-        cc = self.get_controller_config()
+    def connect_controller(self):
+        pipeline_name = self.get_pipeline_name()
+        
+        cc = self.get_controller()
         host = cc.get('host')
         port = cc.get('port')
 
@@ -199,13 +201,7 @@ def DiscoverTables(config, sf_context):
 def FetchTable(table, config, sf_context):
     cs = sf_context.cursor()
     UseWarehouseDatabaseFromConfig(config, cs)
-    #print("\n\n\n@@@ TABLE __%s__" % table)
-    #cs.execute('SELECT table_schema FROM INFORMATION_SCHEMA.TABLES WHERE table_name=%s' % table)
-    #cs.execute("select * from %s" % table)
-
-    print("@@@ FETCHTABLE %s @@@" % table)
-
-    cs.execute('show columns in public.test_table') #' + table)
+    cs.execute('show columns in ' + table)
 
     field_types = {}
     field_names = []
@@ -217,50 +213,34 @@ def FetchTable(table, config, sf_context):
 
         field_names.append(field_name)
         field_types[field_name] = field_type
-#        print(field_name, field_type)
     # endfor
-#    print(r)
 
     # build select.
-
     fields_str = ",".join(field_names)
     sql = "select %s from %s" % (fields_str, table) # order by / limit N
 
     cs.execute(sql)
 
+    dc = config.connect_controller()
+
     r = cs.fetchall()
     for rr in r:
-        print(rr)
+        #print(rr)
+        df_entry = {}
+        for i in range(0, len(rr)):
+            df_entry[field_names[i]] = rr[i]
+        dc.queue_record(df_entry)
 
     cs.close()
 
-    # need to bundle this up for pushing to Data Culpa
-    # 
-
+    (_queue_id, _result) = dc.queue_commit()
+    print("server_result: __%s__" % _result)
 
     return
 
-#        cs.execute("SELECT current_database()")
-#        one_row = cs.fetchone()
-#        print(one_row[0])
-
-    #    cs.execute("CREATE TABLE test_table(name string,age integer)")
-#        cs.execute("INSERT INTO test_table VALUES ('bob', 43)")
-#        cs.execute("SELECT * FROM test_table");
-#        print(cs.fetchone())
-
-#    finally:
-#        cs.close()
-#    ctx.close()
-
-
-def CloseSnowflake():
-    global sf_context
+def CloseSnowflake(sf_context):
     sf_context.close()
     return
-
-gConfig = None
-
 
 def do_init(filename):
     print("Initialize new file")
