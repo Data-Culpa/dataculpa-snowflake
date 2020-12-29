@@ -53,10 +53,8 @@ class Config:
     def __init__(self):
         self._d = { 
                     'dataculpa_controller': {
-                        'host': 'dataculpa-api',
+                        'host': 'localhost',
                         'port': 7777,
-                        #'url': 'http://192.168.1.13:7777',
-                        'api-secret': 'set in .env file $DC_CONTROLLER_SECRET; not here',
                     },
                     'snowflake': {
                         'user': 'user',
@@ -225,7 +223,6 @@ def FetchTable(table, config, sf_context):
 
     r = cs.fetchall()
     for rr in r:
-        #print(rr)
         df_entry = {}
         for i in range(0, len(rr)):
             df_entry[field_names[i]] = rr[i]
@@ -246,6 +243,13 @@ def do_init(filename):
     print("Initialize new file")
     config = Config()
     config.save(filename)
+
+    # Put out an .env template too.
+    with open(filename + ".env", "w") as f:
+        #f.write("DC_CONTROLLER_SECRET=empty\n")
+        f.write("SNOWFLAKE_PASSWORD=probably required\n")
+        f.close()
+
     return
 
 def do_discover(filename):
@@ -294,43 +298,37 @@ def main():
     ap.add_argument("--run", help="Normal operation: run the pipeline")
     args = ap.parse_args()
 
-    env_path = ".env"
-    if args.env:
-        env_path = args.env
-    if not os.path.exists(env_path):
-        sys.stderr.write("Error: missing env file at %s\n" % os.path.realpath(env_path))
-        os._exit(1)
-        return
-    # endif
-
-    dotenv.load_dotenv(env_path)
 
     if args.init:
         do_init(args.init)
         return
-    elif args.discover:
-        do_discover(args.discover)
-        return
-    elif args.test:
-        do_test(args.test)
-        return
-    elif args.run:
-        do_run(args.run)
-        return
+    else:
+        env_path = ".env"
+        if args.env:
+            env_path = args.env
+        if not os.path.exists(env_path):
+            sys.stderr.write("Error: missing env file at %s\n" % os.path.realpath(env_path))
+            os._exit(1)
+            return
+        # endif
+
+        if args.discover:
+            dotenv.load_dotenv(env_path)
+            do_discover(args.discover)
+            return
+        elif args.test:
+            dotenv.load_dotenv(env_path)
+            do_test(args.test)
+            return
+        elif args.run:
+            dotenv.load_dotenv(env_path)
+            do_run(args.run)
+            return
+        # endif
+    # endif
 
     ap.print_help()
     return
 
 if __name__ == "__main__":
     main()
-
-"""
-    table_names = ConnectToSnowflake()
-
-    for t in table_names:
-        FetchTable(t)
-
-    if sf_context is not None:
-        sf_context.close()
-
-"""
