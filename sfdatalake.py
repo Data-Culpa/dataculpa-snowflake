@@ -36,6 +36,24 @@ import yaml
 
 import snowflake.connector
 
+import logging
+
+if False:
+    for k,v in  logging.Logger.manager.loggerDict.items():
+        if k.find(".") > 0:
+            continue        
+        print(k)#, v)
+        print("---")
+
+for logger_name in ['snowflake.connector', 'urllib3', 'botocore', 'boto3']:
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(logging.WARN)
+    #ch = logging.FileHandler('/tmp/python_connector.log')
+    #ch.setLevel(logging.DEBUG)
+    #ch.setFormatter(logging.Formatter('%(asctime)s - %(threadName)s %(filename)s:%(lineno)d - %(funcName)s() - %(levelname)s - %(message)s'))
+    #logger.addHandler(ch)
+
+
 from dataculpa import DataCulpaValidator
 
 
@@ -259,12 +277,33 @@ def do_discover(filename):
     sf_context = ConnectToSnowflake(config)
 
     table_names = DiscoverTables(config, sf_context)
-    print(table_names)
+    if len(table_names) == 0:
+        print("No tables found; check configuration and/or permissions?")
+        os._exit(2)
+    # endif
+
+    for t in table_names:
+        print("Found table:", t)
+    # endfor
 
     return
 
 def do_test(filename):
     print("test with config from file %s" % filename)
+    config = Config()
+    config.load(filename)
+
+    # get the table list...
+    table_list = config.get_sf_table_list()
+    if len(table_list) == 0:
+        FatalError(1, "no tables listed to triage!")
+        return
+
+    sf_context = ConnectToSnowflake(config)
+
+    for t in table_list:
+        FetchTable(t, config, sf_context)
+    
     return
 
 def do_run(filename):
