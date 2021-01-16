@@ -74,19 +74,18 @@ class Config:
                         'host': 'localhost',
                         'port': 7777,
                     },
-                    'snowflake': {
-                        'user': 'user',
-                        'account': 'account',
-                        'region': 'region',
-                        'database': 'database',
-                        'warehouse': 'warehouse',
+                    'configutation': {
+                        'user': '[required] user',
+                        'account': '[required] account',
+                        'region': '[optional] region',
+                        'database': '[required] database',
+                        'warehouse': '[optional] warehouse',
                         'table_list': []
                     },
                     'dataculpa_pipeline': {
                         'name': '[required] pipeline_name',
                         'environment': '[optional] environment, e.g., test or production',
                         'stage': '[optional] a string representing the stage of this part of the pipeline',
-                        'table_is_stage': True, # use the table name as the stage name
                         'version': '[optional] a string representing the version of implementation'
                     }
         }
@@ -265,7 +264,7 @@ def do_init(filename):
     # Put out an .env template too.
     with open(filename + ".env", "w") as f:
         #f.write("DC_CONTROLLER_SECRET=empty\n")
-        f.write("SNOWFLAKE_PASSWORD=probably required\n")
+        f.write("SNOWFLAKE_PASSWORD=[required]\n")
         f.close()
 
     return
