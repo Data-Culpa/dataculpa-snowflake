@@ -74,13 +74,14 @@ class Config:
                         'host': 'localhost',
                         'port': 7777,
                     },
-                    'configutation': {
+                    'configuration': {
                         'user': '[required] user',
                         'account': '[required] account',
                         'region': '[optional] region',
                         'database': '[required] database',
+                        'schema': '[optional] schema',
                         'warehouse': '[optional] warehouse',
-                        'table_list': []
+                        'table_list': {}
                     },
                     'dataculpa_pipeline': {
                         'name': '[required] pipeline_name',
@@ -119,7 +120,7 @@ class Config:
         return
 
     def get_snowflake(self):
-        return self._d.get('snowflake')
+        return self._d.get('configuration')
     
     def get_sf_user(self):
         return self.get_snowflake().get('user')
@@ -169,7 +170,7 @@ class Config:
         return v
 
 def ConnectToSnowflake(config):
-    print("connecting")
+    print("connecting...")
     # Gets the version
     sf_context = snowflake.connector.connect(
         user=config.get_sf_user(),
@@ -197,18 +198,25 @@ def UseWarehouseDatabaseFromConfig(config, cursor):
     return
 
 def DiscoverTables(config, sf_context):
-
+    db_name = config.get_sf_database()
+    print("DiscoverTables:", db_name)
     table_names = []
 
     cs = sf_context.cursor()
     UseWarehouseDatabaseFromConfig(config, cs)
-    cs.execute('show tables')
+
+    cs.execute("SHOW TABLES IN DATABASE %s" % db_name)
     r = cs.fetchall()
-    #print("show tables = __%s__" % r)
-    for rr in r:
-        tname = rr[1] # FIXME: obviously there must be a better way
-        table_names.append(tname)
+    for _r in r:
+        # https://docs.snowflake.com/en/sql-reference/sql/show-tables.html
+        # created datetime, table name, kind, database_name, schema_name... 
+        # but there's a lot of other goodies in here too.
+        #print("*** %40s %20s" % (_r[1], _r[0]))
+        t_name = _r[1]
+        if not (t_name in table_names):
+            table_names.append(_r[1]) # FIXME: can exist across schemas and such... need to handle this better.
     # endfor
+
     cs.close()
 
     return table_names
@@ -232,8 +240,8 @@ def FetchTable(table, config, sf_context):
 
     # build select.
     fields_str = ",".join(field_names)
-    sql = "select %s from %s" % (fields_str, table) # order by / limit N
-
+    sql = "select %s from %s LIMIT 2000" % (fields_str, table) # order by / limit N
+    print(sql)
     cs.execute(sql)
 
     dc = config.connect_controller()
@@ -301,7 +309,8 @@ def do_test(filename):
     sf_context = ConnectToSnowflake(config)
 
     for t in table_list:
-        FetchTable(t, config, sf_context)
+        print(t)
+        #FetchTable(t, config, sf_context)
     
     return
 
@@ -319,7 +328,10 @@ def do_run(filename):
     sf_context = ConnectToSnowflake(config)
 
     for t in table_list:
-        FetchTable(t, config, sf_context)
+        t_name          = t.get('table')
+        t_order_by      = t.get('desc_order_by')
+        t_initial_limit = t.get('initial_limit')
+        FetchTable(t_name, config, sf_context)
     
     return
 
