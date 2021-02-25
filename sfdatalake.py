@@ -27,12 +27,13 @@
 
 import argparse
 import dotenv
-#import logging
+import json
 import os
 import pickle
 import uuid
 import sqlite3
 import sys
+import traceback
 import yaml
 
 import snowflake.connector
@@ -291,7 +292,6 @@ def DiscoverTablesAndViews(config, sf_context):
             table_names.append(_r[1]) # FIXME: can exist across schemas and such... need to handle this better.
     # endfor
 
-
     cs.execute("SHOW VIEWS IN DATABASE %s" % db_name)
     r = cs.fetchall()
     view_names = []
@@ -308,6 +308,30 @@ def DiscoverTablesAndViews(config, sf_context):
     cs.close()
 
     return table_names, view_names
+
+
+def DescribeTable(table, config, sf_context):
+    cs = sf_context.cursor()
+    UseWarehouseDatabaseFromConfig(config, cs)
+    cs.execute('show columns in ' + table)
+
+    field_types = {}
+    field_names = []
+    r = cs.fetchall()
+    for rr in r:
+        # (table name, public [is this the schema?], field_name, type_info...)
+        field_name = rr[2]
+        field_type = rr[3]
+
+        field_names.append(field_name)
+        field_types[field_name] = field_type
+    # endfor
+
+    cs.execute('select count(*) from ' + table)
+    r = cs.fetchall()
+    print(r)
+
+    return field_names, field_types
 
 
 def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
@@ -401,11 +425,32 @@ def do_init(filename):
 
     return
 
-def do_discover(filename):
+def do_discover(filename, table_name):
     print("discover with config from file %s" % filename)
     config = Config()
     config.load(filename)
     sf_context = ConnectToSnowflake(config)
+
+    if table_name:
+        # we want to get the schema for the specified table.
+        (_names, _type_dict) = DescribeTable(table_name, config, sf_context)
+
+        for n in _names:
+            js_str = _type_dict[n]
+            js_obj = None
+            try:
+                js_obj = json.loads(js_str)
+            except:
+                traceback.print_exc()
+                pass
+            
+            if js_obj is None:
+                print(n, js_str)
+            else:
+                print(n, js_obj.get('type', "missing type in %s" % js_str))
+        #print(_names)
+        #print(_type_dict)
+        return
 
     (table_names, view_names) = DiscoverTablesAndViews(config, sf_context)
     if len(table_names) == 0 and len(view_names):
@@ -421,6 +466,9 @@ def do_discover(filename):
     # endfor
 
     for v in view_names:
+        if v in table_names:
+            continue
+        
         print(i, ": Found view:", v)
         i += 1
 
@@ -445,7 +493,7 @@ def do_test(filename):
     
     return
 
-def do_run(filename):
+def do_run(filename, table_name):
     print("run with config from file %s" % filename)
     config = Config()
     config.load(filename)
@@ -462,12 +510,19 @@ def do_run(filename):
         t_name          = t.get('table')
         t_order_by      = t.get('desc_order_by')
         t_initial_limit = t.get('initial_limit')
-        
-        # little safeguard while we test
-        if t_initial_limit > 200:
-            t_initial_limit = 200
 
-        FetchTable(t_name, config, sf_context, t_order_by, t_initial_limit)
+        # little safeguard while we test
+        if t_initial_limit is None:
+            t_initial_limit = 1000
+
+        if table_name is not None:
+            if t_name.lower() == table_name.lower():
+                FetchTable(t_name, config, sf_context, t_order_by, t_initial_limit)                
+        else:
+            # normal operation
+            FetchTable(t_name, config, sf_context, t_order_by, t_initial_limit)
+        # endif
+    # endfor
 
     return
 
@@ -482,6 +537,8 @@ def main():
     ap.add_argument("--discover", help="Run the specified configuration to discover available databases/tables in Snowflake")
     ap.add_argument("--test", help="Test the configuration specified.")
     ap.add_argument("--run", help="Normal operation: run the pipeline")
+
+    ap.add_argument("--table", help="Operate on the specified table name")
     args = ap.parse_args()
 
 
@@ -500,7 +557,7 @@ def main():
 
         if args.discover:
             dotenv.load_dotenv(env_path)
-            do_discover(args.discover)
+            do_discover(args.discover, args.table)
             return
         elif args.test:
             dotenv.load_dotenv(env_path)
@@ -508,7 +565,7 @@ def main():
             return
         elif args.run:
             dotenv.load_dotenv(env_path)
-            do_run(args.run)
+            do_run(args.run, args.table)
             return
         # endif
     # endif
