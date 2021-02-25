@@ -29,6 +29,7 @@ import argparse
 import dotenv
 #import logging
 import os
+import pickle
 import uuid
 import sqlite3
 import sys
@@ -122,6 +123,9 @@ class Config:
     def get_snowflake(self):
         return self._d.get('configuration')
     
+    def get_sf_local_cache_file(self):
+        return self.get_snowflake().get('session_history_cache', 'session_history_cache.db')
+
     def get_sf_user(self):
         return self.get_snowflake().get('user')
     
@@ -155,9 +159,12 @@ class Config:
     def get_pipeline_table_is_stage(self):
         return self.get_pipeline().get('table_is_stage', False)
 
-    def connect_controller(self):
+    def connect_controller(self, table_name):
         pipeline_name = self.get_pipeline_name()
-        
+
+        if pipeline_name.find("$TABLE") >= 0:
+            pipeline_name = pipeline_name.replace("$TABLE", table_name)
+
         cc = self.get_controller()
         host = cc.get('host')
         port = cc.get('port')
@@ -168,6 +175,75 @@ class Config:
                                dc_host=host,
                                dc_port=port)
         return v
+
+
+class SessionHistory:
+    def __init__(self):
+        self.history = {}
+
+    def add_history(self, table_name, field, value):
+        self.history[table_name] = (field, value)
+        return
+    
+    def has_history(self, table_name):
+        return self.history.get(table_name) is not None
+
+    def get_history(self, table_name):
+        return self.history.get(table_name)
+    
+    def _handle_new_cache(self, cache_path):
+        needs_tables = False
+        if not os.path.exists(cache_path):
+            # create new
+            needs_tables = True
+        
+        if needs_tables:
+            # table will likely have collisions prety quick... 
+            c = sqlite3.connect(cache_path)
+            c.execute("create table cache (object_name text unique, field_name text, field_value)")
+            c.commit()
+        # endif
+    
+        return
+
+    def save(self, config):
+        # write to disk
+        cache_path = config.get_sf_local_cache_file()
+        assert cache_path is not None
+
+        self._handle_new_cache(cache_path)
+
+        c = sqlite3.connect(cache_path)
+        for table, f_pair in self.history.items():
+            (fn, fv) = f_pair
+            fv_pickle = pickle.dumps(fv)
+            # Note that this might be dangerous if we add new fields later and we don't set them all...
+            print(table, fn, fv)
+            c.execute("insert or replace into cache (object_name, field_name, field_value) values (?,?,?)", 
+                      (table, fn, fv_pickle))
+
+        c.commit()
+
+        return
+    
+    def load(self, config):
+        # read from disk
+        cache_path = config.get_sf_local_cache_file()
+        assert cache_path is not None
+
+        self._handle_new_cache(cache_path)
+
+        c = sqlite3.connect(cache_path)
+        r = c.execute("select object_name, field_name, field_value from cache")
+        for row in r:
+            (table, fn, fv_pickle) = row
+            fv = pickle.loads(fv_pickle)
+            self.add_history(table, fn, fv)
+        # endfor
+        return
+
+
+gCache = SessionHistory()
 
 def ConnectToSnowflake(config):
     print("connecting...")
@@ -185,10 +261,8 @@ def ConnectToSnowflake(config):
 def UseWarehouseDatabaseFromConfig(config, cursor):
     try:
         if config.get_sf_warehouse() is not None:
-            print("@@@ using warehouse")
             cursor.execute("USE warehouse %s" % config.get_sf_warehouse())
         if config.get_sf_database() is not None:
-            print("@@@ using database")
             cursor.execute("USE database %s" % config.get_sf_database())
 
     except Exception as e:
@@ -197,7 +271,7 @@ def UseWarehouseDatabaseFromConfig(config, cursor):
 
     return
 
-def DiscoverTables(config, sf_context):
+def DiscoverTablesAndViews(config, sf_context):
     db_name = config.get_sf_database()
     print("DiscoverTables:", db_name)
     table_names = []
@@ -217,11 +291,27 @@ def DiscoverTables(config, sf_context):
             table_names.append(_r[1]) # FIXME: can exist across schemas and such... need to handle this better.
     # endfor
 
+
+    cs.execute("SHOW VIEWS IN DATABASE %s" % db_name)
+    r = cs.fetchall()
+    view_names = []
+    for _r in r:
+        # https://docs.snowflake.com/en/sql-reference/sql/show-tables.html
+        # created datetime, table name, kind, database_name, schema_name... 
+        # but there's a lot of other goodies in here too.
+        #print("*** %40s %20s" % (_r[1], _r[0]))
+        t_name = _r[1]
+        if not (t_name in view_names):
+            view_names.append(_r[1]) # FIXME: can exist across schemas and such... need to handle this better.
+    # endfor
+
     cs.close()
 
-    return table_names
+    return table_names, view_names
 
-def FetchTable(table, config, sf_context):
+
+def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
+    print(":fetching ... ", table)
     cs = sf_context.cursor()
     UseWarehouseDatabaseFromConfig(config, cs)
     cs.execute('show columns in ' + table)
@@ -239,24 +329,58 @@ def FetchTable(table, config, sf_context):
     # endfor
 
     # build select.
+    # ok we need to see if we have fetched this table before..
+
     fields_str = ",".join(field_names)
-    sql = "select %s from %s LIMIT 2000" % (fields_str, table) # order by / limit N
-    print(sql)
+    sql = "select %s from %s " % (fields_str, table)
+
+    # check our history.
+    gCache.load(config)
+    marker_pair = gCache.get_history(table)
+    if marker_pair is not None:
+        (fk, fv) = marker_pair
+        sql += " WHERE %s > '%s'" % (fk, fv)
+    if t_order_by is not None:
+        sql += " ORDER BY %s DESC" % t_order_by
+    if t_initial_limit is not None:
+        # we want to do this only if we don't have a cached object for this table.
+        if not gCache.has_history(table):
+            sql += " LIMIT %s" % t_initial_limit
+    #print(sql)
     cs.execute(sql)
 
-    dc = config.connect_controller()
+    dc = config.connect_controller(table)
 
+    cache_marker = None
     r = cs.fetchall()
+    r_count = 0
     for rr in r:
+        r_count += 1
         df_entry = {}
         for i in range(0, len(rr)):
             df_entry[field_names[i]] = rr[i]
+
+            if field_names[i] == t_order_by:
+                cache_marker = rr[i]
         dc.queue_record(df_entry)
+
+    if r_count > 0:
+        if cache_marker is None:
+            if t_order_by is not None:
+                print("ERROR: we specified an order by constraint for caching that is missing from the table schema.")
+                os._exit(2)
+        else:
+            # OK, save it off...
+            gCache.add_history(table, t_order_by, cache_marker)
+            gCache.save(config)
+        # endif
+    # endif
 
     cs.close()
 
-    (_queue_id, _result) = dc.queue_commit()
-    print("server_result: __%s__" % _result)
+    if r_count > 0:
+        (_queue_id, _result) = dc.queue_commit()
+        print("server_result: __%s__" % _result)
 
     return
 
@@ -283,15 +407,22 @@ def do_discover(filename):
     config.load(filename)
     sf_context = ConnectToSnowflake(config)
 
-    table_names = DiscoverTables(config, sf_context)
-    if len(table_names) == 0:
-        print("No tables found; check configuration and/or permissions?")
+    (table_names, view_names) = DiscoverTablesAndViews(config, sf_context)
+    if len(table_names) == 0 and len(view_names):
+        print("No tables or views found; check configuration and/or permissions?")
         os._exit(2)
     # endif
 
+    i = 1
     for t in table_names:
-        print("Found table:", t)
+        print(i, ": Found table:", t)
+        i += 1
+        #DescribeTable(config, sf_context, config.get_sf_database(), t)
     # endfor
+
+    for v in view_names:
+        print(i, ": Found view:", v)
+        i += 1
 
     return
 
@@ -331,8 +462,13 @@ def do_run(filename):
         t_name          = t.get('table')
         t_order_by      = t.get('desc_order_by')
         t_initial_limit = t.get('initial_limit')
-        FetchTable(t_name, config, sf_context)
-    
+        
+        # little safeguard while we test
+        if t_initial_limit > 200:
+            t_initial_limit = 200
+
+        FetchTable(t_name, config, sf_context, t_order_by, t_initial_limit)
+
     return
 
 def main():
