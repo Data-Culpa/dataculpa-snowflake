@@ -33,6 +33,7 @@ import pickle
 import uuid
 import sqlite3
 import sys
+import time
 import traceback
 import yaml
 
@@ -181,8 +182,14 @@ class Config:
 class SessionHistory:
     def __init__(self):
         self.history = {}
+        self.config = None
+
+    def set_config(self, config):
+        assert isinstance(config, Config)
+        self.config = config
 
     def add_history(self, table_name, field, value):
+        assert self.config is not None
         self.history[table_name] = (field, value)
         return
     
@@ -192,24 +199,44 @@ class SessionHistory:
     def get_history(self, table_name):
         return self.history.get(table_name)
     
+    def _get_existing_tables(self, cache_path):
+        assert self.config is not None
+        _tables = []
+        c = sqlite3.connect(cache_path)
+        r = c.execute("select name from sqlite_master where type='table' and name not like 'sqlite_%'")
+        for row in r:
+            _tables.append(row[0])
+        return _tables
+
     def _handle_new_cache(self, cache_path):
-        needs_tables = False
-        if not os.path.exists(cache_path):
-            # create new
-            needs_tables = True
-        
-        if needs_tables:
-            # table will likely have collisions prety quick... 
-            c = sqlite3.connect(cache_path)
+        assert self.config is not None
+        _tables = self._get_existing_tables(cache_path)
+
+        c = sqlite3.connect(cache_path)
+        if not ("cache" in _tables):
             c.execute("create table cache (object_name text unique, field_name text, field_value)")
-            c.commit()
+
+        if not ("sql_log" in _tables):
+            c.execute("create table sql_log (sql text, object_name text, Timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
+
+        c.commit()
+
         # endif
     
         return
 
-    def save(self, config):
+    def append_sql_log(self, table_name, sql_stmt):
+        assert self.config is not None
+        cache_path = self.config.get_sf_local_cache_file()
+        c = sqlite3.connect(cache_path)
+        c.execute("insert into sql_log (sql, object_name) values (?,?)", (sql_stmt, table_name))
+        c.commit()
+        return
+
+    def save(self):
+        assert self.config is not None
         # write to disk
-        cache_path = config.get_sf_local_cache_file()
+        cache_path = self.config.get_sf_local_cache_file()
         assert cache_path is not None
 
         self._handle_new_cache(cache_path)
@@ -227,9 +254,13 @@ class SessionHistory:
 
         return
     
-    def load(self, config):
+    def load(self):
+        assert self.config is not None
+        print("load...")
+        time.sleep(1)
+
         # read from disk
-        cache_path = config.get_sf_local_cache_file()
+        cache_path = self.config.get_sf_local_cache_file()
         assert cache_path is not None
 
         self._handle_new_cache(cache_path)
@@ -280,7 +311,9 @@ def DiscoverTablesAndViews(config, sf_context):
     cs = sf_context.cursor()
     UseWarehouseDatabaseFromConfig(config, cs)
 
-    cs.execute("SHOW TABLES IN DATABASE %s" % db_name)
+    sql = "SHOW TABLES IN DATABASE %s" % db_name
+    gCache.append_sql_log("(none)", sql)
+    cs.execute(sql)
     r = cs.fetchall()
     for _r in r:
         # https://docs.snowflake.com/en/sql-reference/sql/show-tables.html
@@ -292,7 +325,9 @@ def DiscoverTablesAndViews(config, sf_context):
             table_names.append(_r[1]) # FIXME: can exist across schemas and such... need to handle this better.
     # endfor
 
-    cs.execute("SHOW VIEWS IN DATABASE %s" % db_name)
+    sql = "SHOW VIEWS IN DATABASE %s" % db_name
+    gCache.append_sql_log("(none)", sql)
+    cs.execute(sql)
     r = cs.fetchall()
     view_names = []
     for _r in r:
@@ -313,7 +348,9 @@ def DiscoverTablesAndViews(config, sf_context):
 def DescribeTable(table, config, sf_context):
     cs = sf_context.cursor()
     UseWarehouseDatabaseFromConfig(config, cs)
-    cs.execute('show columns in ' + table)
+    sql = 'show columns in ' + table
+    gCache.append_sql_log(config, sql)
+    cs.execute(sql)
 
     field_types = {}
     field_names = []
@@ -327,7 +364,9 @@ def DescribeTable(table, config, sf_context):
         field_types[field_name] = field_type
     # endfor
 
-    cs.execute('select count(*) from ' + table)
+    sql = 'select count(*) from ' + table
+    gCache.append_sql_log(table, sql)
+    cs.execute(sql)
     r = cs.fetchall()
     print(r)
 
@@ -338,6 +377,9 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
     print(":fetching ... ", table)
     cs = sf_context.cursor()
     UseWarehouseDatabaseFromConfig(config, cs)
+
+    sql = 'show columns in ' + table
+    gCache.append_sql_log(table, sql)
     cs.execute('show columns in ' + table)
 
     field_types = {}
@@ -359,7 +401,8 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
     sql = "select %s from %s " % (fields_str, table)
 
     # check our history.
-    gCache.load(config)
+    gCache.load()
+
     marker_pair = gCache.get_history(table)
     if marker_pair is not None:
         (fk, fv) = marker_pair
@@ -370,7 +413,8 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
         # we want to do this only if we don't have a cached object for this table.
         if not gCache.has_history(table):
             sql += " LIMIT %s" % t_initial_limit
-    #print(sql)
+
+    gCache.append_sql_log(table, sql)
     cs.execute(sql)
 
     dc = config.connect_controller(table)
@@ -396,7 +440,7 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
         else:
             # OK, save it off...
             gCache.add_history(table, t_order_by, cache_marker)
-            gCache.save(config)
+            gCache.save()
         # endif
     # endif
 
@@ -429,6 +473,7 @@ def do_discover(filename, table_name):
     print("discover with config from file %s" % filename)
     config = Config()
     config.load(filename)
+    gCache.set_config(config)
     sf_context = ConnectToSnowflake(config)
 
     if table_name:
@@ -468,7 +513,7 @@ def do_discover(filename, table_name):
     for v in view_names:
         if v in table_names:
             continue
-        
+
         print(i, ": Found view:", v)
         i += 1
 
@@ -478,6 +523,7 @@ def do_test(filename):
     print("test with config from file %s" % filename)
     config = Config()
     config.load(filename)
+    gCache.set_config(config)
 
     # get the table list...
     table_list = config.get_sf_table_list()
@@ -497,7 +543,8 @@ def do_run(filename, table_name):
     print("run with config from file %s" % filename)
     config = Config()
     config.load(filename)
-    
+    gCache.set_config(config)
+
     # get the table list...
     table_list = config.get_sf_table_list()
     if len(table_list) == 0:
