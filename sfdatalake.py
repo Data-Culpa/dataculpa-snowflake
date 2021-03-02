@@ -402,7 +402,32 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
 
     # build select.
     # ok we need to see if we have fetched this table before..
+    
+    # build up min/maxes in case it's useful for debugging.
+    if t_order_by is not None:
+        global_min_sql = "select min(%s) from %s"  % (t_order_by, table)
+        global_max_sql = "select max(%s) from %s"  % (t_order_by, table)
+        global_count   = "select count(*) from %s" % (table,)
 
+        gCache.append_sql_log(table, global_min_sql)
+        cs.execute(global_min_sql)
+        min_r = cs.fetchone()
+
+        gCache.append_sql_log(table, global_max_sql)
+        cs.execute(global_max_sql)
+        max_r = cs.fetchone()
+
+        gCache.append_sql_log(table, global_count)
+        cs.execute(global_count)
+        count_r = cs.fetchone()
+
+        meta['min_%s' % table]   = min_r
+        meta['max_%s' % table]   = max_r
+        meta['count_%s' % table] = count_r
+    # endif
+
+    # endif
+    #         
     fields_str = ",".join(field_names)
     sql = "select %s from %s " % (fields_str, table)
 
@@ -423,6 +448,8 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
     ts = time.time()
 
     gCache.append_sql_log(table, sql)
+    gCache.save()
+
     cs.execute(sql)
 
     dt = time.time() - ts
@@ -445,6 +472,12 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
             if field_names[i] == t_order_by:
                 cache_marker = rr[i]
         dc.queue_record(df_entry)
+
+        # just for debugging
+        if os.environ.get('SF_DEBUG'):
+            if r_count > 100:
+                print("SF_DEBUG is set; stopping at 100 rows")
+                break
 
     if r_count > 0:
         if cache_marker is None:
