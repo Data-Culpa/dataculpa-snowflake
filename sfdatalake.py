@@ -462,9 +462,6 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
 
     meta['record_count'] = r_count
 
-#    if r_count > 0:
-# FIXME: we need to handle an empty queue...an empty queue could still have meta 
-# data that we want to track.
     dc.queue_metadata(dc.get_queue_id(), meta)
     (_queue_id, _result) = dc.queue_commit()
     print("server_result: __%s__" % _result)
