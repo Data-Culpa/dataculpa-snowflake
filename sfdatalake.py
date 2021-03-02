@@ -227,8 +227,12 @@ class SessionHistory:
 
     def append_sql_log(self, table_name, sql_stmt):
         assert self.config is not None
+        assert isinstance(table_name, str)
+        assert isinstance(sql_stmt, str)
+
         cache_path = self.config.get_sf_local_cache_file()
         c = sqlite3.connect(cache_path)
+        self._handle_new_cache(cache_path)
         c.execute("insert into sql_log (sql, object_name) values (?,?)", (sql_stmt, table_name))
         c.commit()
         return
@@ -246,7 +250,7 @@ class SessionHistory:
             (fn, fv) = f_pair
             fv_pickle = pickle.dumps(fv)
             # Note that this might be dangerous if we add new fields later and we don't set them all...
-            print(table, fn, fv)
+            #print(table, fn, fv)
             c.execute("insert or replace into cache (object_name, field_name, field_value) values (?,?,?)", 
                       (table, fn, fv_pickle))
 
@@ -349,7 +353,7 @@ def DescribeTable(table, config, sf_context):
     cs = sf_context.cursor()
     UseWarehouseDatabaseFromConfig(config, cs)
     sql = 'show columns in ' + table
-    gCache.append_sql_log(config, sql)
+    gCache.append_sql_log(table, sql)
     cs.execute(sql)
 
     field_types = {}
@@ -368,7 +372,7 @@ def DescribeTable(table, config, sf_context):
     gCache.append_sql_log(table, sql)
     cs.execute(sql)
     r = cs.fetchall()
-    print(r)
+    #print("table: ", r)
 
     return field_names, field_types
 
@@ -377,6 +381,8 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
     print(":fetching ... ", table)
     cs = sf_context.cursor()
     UseWarehouseDatabaseFromConfig(config, cs)
+
+    meta = {}
 
     sql = 'show columns in ' + table
     gCache.append_sql_log(table, sql)
@@ -414,14 +420,22 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
         if not gCache.has_history(table):
             sql += " LIMIT %s" % t_initial_limit
 
+    ts = time.time()
+
     gCache.append_sql_log(table, sql)
     cs.execute(sql)
 
-    dc = config.connect_controller(table)
+    dt = time.time() - ts
+
+    meta['sql_query'] = sql
+    meta['sql_delta_time'] = dt
 
     cache_marker = None
     r = cs.fetchall()
     r_count = 0
+
+    dc = config.connect_controller(table)
+
     for rr in r:
         r_count += 1
         df_entry = {}
@@ -446,9 +460,14 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
 
     cs.close()
 
-    if r_count > 0:
-        (_queue_id, _result) = dc.queue_commit()
-        print("server_result: __%s__" % _result)
+    meta['record_count'] = r_count
+
+#    if r_count > 0:
+# FIXME: we need to handle an empty queue...an empty queue could still have meta 
+# data that we want to track.
+    dc.queue_metadata(dc.get_queue_id(), meta)
+    (_queue_id, _result) = dc.queue_commit()
+    print("server_result: __%s__" % _result)
 
     return
 
@@ -479,7 +498,7 @@ def do_discover(filename, table_name):
     if table_name:
         # we want to get the schema for the specified table.
         (_names, _type_dict) = DescribeTable(table_name, config, sf_context)
-
+        print("Table %s:" % table_name)
         for n in _names:
             js_str = _type_dict[n]
             js_obj = None
