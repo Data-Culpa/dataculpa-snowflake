@@ -426,8 +426,6 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
         meta['count_%s' % table] = count_r
     # endif
 
-    # endif
-    #         
     fields_str = ",".join(field_names)
     sql = "select %s from %s " % (fields_str, table)
 
@@ -495,7 +493,7 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
 
     meta['record_count'] = r_count
 
-    dc.queue_metadata(dc.get_queue_id(), meta)
+    dc.queue_metadata(meta)
     (_queue_id, _result) = dc.queue_commit()
     print("server_result: __%s__" % _result)
 
@@ -518,7 +516,38 @@ def do_init(filename):
 
     return
 
-def do_discover(filename, table_name):
+def _check_perms(table_name, config, sf_context):
+    # given the table name (or view name), we want to see if we can read anything from it.
+    #select count(*) from table_name
+    #select * from table_name limit 1;
+    cs = sf_context.cursor()
+    UseWarehouseDatabaseFromConfig(config, cs)
+    sql = "select * from PARTHENON.REUTERS.%s limit 1" % table_name
+    gCache.append_sql_log(table_name, sql)
+    try:
+        cs.execute(sql)
+        a_row = cs.fetchone()
+        return True, "got a row back without errors"
+    except:
+        # got an error
+        #_extype, _exvalue, _extb = sys.exc_info()
+        #print(_extype)
+        #print(_extb)
+
+        exc = traceback.format_exc()
+        _exvalue = exc # just in case
+        #print(type(exc))
+        exc = exc.split("\n")
+        # get the last line...
+        #print(exc)
+        if len(exc) > 1:
+            # tighten it up
+            _exvalue = exc[-2]
+
+        return False, "error getting a row: %s" % _exvalue
+    return False, "should never get here!"
+
+def do_discover(filename, table_name, perms_check):
     print("discover with config from file %s" % filename)
     config = Config()
     config.load(filename)
@@ -554,8 +583,17 @@ def do_discover(filename, table_name):
 
     i = 1
     for t in table_names:
-        print(i, ": Found table:", t)
+
+        err_str = ""
+        if perms_check:
+            (worked, message) = _check_perms(t, config, sf_context)
+            if not worked:
+                err_str = " failed to read a row! %s" % message
+        # endif
+
+        print(i, ": Found table:", t, err_str)
         i += 1
+
         #DescribeTable(config, sf_context, config.get_sf_database(), t)
     # endfor
 
@@ -563,7 +601,14 @@ def do_discover(filename, table_name):
         if v in table_names:
             continue
 
-        print(i, ": Found view:", v)
+        err_str = ""
+        if perms_check:
+            (worked, message) = _check_perms(v, config, sf_context)
+            if not worked:
+                err_str = " failed to read a row! %s" % message
+        # endif
+
+        print(i, ": Found view:", v, err_str)
         i += 1
 
     return
@@ -634,7 +679,13 @@ def main():
     ap.add_argument("--test", help="Test the configuration specified.")
     ap.add_argument("--run", help="Normal operation: run the pipeline")
 
+#    subparsers = ap.add_subparsers(help="aroo?")
+
+    # discover subcommand.
+#    ap_discover = subparsers.add_parser("--discover")
     ap.add_argument("--table", help="Operate on the specified table name")
+#    ap.add_argument("--perms", help="Check permissions")
+
     args = ap.parse_args()
 
 
@@ -653,7 +704,7 @@ def main():
 
         if args.discover:
             dotenv.load_dotenv(env_path)
-            do_discover(args.discover, args.table)
+            do_discover(args.discover, args.table, True)
             return
         elif args.test:
             dotenv.load_dotenv(env_path)
