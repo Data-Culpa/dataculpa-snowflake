@@ -175,7 +175,8 @@ class Config:
         v = DataCulpaValidator(pipeline_name,
                                protocol=DataCulpaValidator.HTTP,
                                dc_host=host,
-                               dc_port=port)
+                               dc_port=port,
+                               queue_window=1000)
         return v
 
 
