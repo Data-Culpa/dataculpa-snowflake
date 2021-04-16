@@ -1,5 +1,5 @@
 # dataculpa-snowflake
-Snowflake connectors for Data Culpa
+Snowflake connector for Data Culpa to monitor ongoing quality and consistency metrics in Snowflake tables and views
 
 This connector conforms to the [Data Culpa connector template](https://github.com/Data-Culpa/connector-template).
 
@@ -9,10 +9,9 @@ This connector conforms to the [Data Culpa connector template](https://github.co
 1. Clone the repo (or just ```sfdatalake.py```)
 2. Install python dependencies (python3):
 ```
-pip install python-dotenv snowflake-connector-python
+pip install python-dotenv snowflake-connector-python dataculpa-client
 ```
-3. Install the [Data Culpa python client](https://github.com/Data-Culpa/openclients) and configure your ```PYTHONPATH``` to include the ```dataculpa/``` directory.  (Coming soon: pip package.)
-4. Create a .env file with the following keys:
+3. Create a .env file with the following keys:
 
 ```
 # API key to access the storage.
