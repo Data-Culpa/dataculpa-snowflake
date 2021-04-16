@@ -19,12 +19,12 @@ DC_CONTROLLER_SECRET = secret-here   # Create a new API secret in the Data Culpa
 SNOWFLAKE_PASSWORD = secret-here
 ```
 
-5. Run ```sfdatalake.py --init example.yaml``` to generate a template yaml to fill in connection coordinates. Note that we always keep secrets in the .env and not the yaml, so that the yaml file will be safe to check into source control or otherwise distribute in your organization, etc.
+4. Run ```sfdatalake.py --init example.yaml``` to generate a template yaml to fill in connection coordinates. Note that we always keep secrets in the .env and not the yaml, so that the yaml file will be safe to check into source control or otherwise distribute in your organization, etc.
 
 
-6. Once you have your yaml file edited, run ```sfdatalake.py --test example.yaml``` to test the connections to the database and the Data Culpa Validator controller.
+5. Once you have your yaml file edited, run ```sfdatalake.py --test example.yaml``` to test the connections to the database and the Data Culpa Validator controller.
 
-7. (You can also run  ```sfdatalake.py --discover example.yaml``` to see what tables are discoverable for walking with the connector. Snowflake permissions may impact visibility here.)
+6. (You can also run  ```sfdatalake.py --discover example.yaml``` to see what tables are discoverable for walking with the connector. Snowflake permissions may impact visibility here.)
 
 
 
