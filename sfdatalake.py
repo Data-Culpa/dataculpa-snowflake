@@ -26,20 +26,21 @@
 #
 
 import argparse
-import dotenv
 import json
+import logging
 import os
 import pickle
-import uuid
 import sqlite3
 import sys
 import time
 import traceback
 import yaml
 
+import dotenv
+
 import snowflake.connector
 
-import logging
+from datetime import datetime, timedelta, timezone
 
 if False:
     for k,v in  logging.Logger.manager.loggerDict.items():
@@ -56,6 +57,8 @@ for logger_name in ['snowflake.connector', 'urllib3', 'botocore', 'boto3']:
     #ch.setFormatter(logging.Formatter('%(asctime)s - %(threadName)s %(filename)s:%(lineno)d - %(funcName)s() - %(levelname)s - %(message)s'))
     #logger.addHandler(ch)
 
+logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
+logger = logging.getLogger('dataculpa')
 
 from dataculpa import DataCulpaValidator
 
@@ -97,7 +100,7 @@ class Config:
 
     def save(self, fname):
         if os.path.exists(fname):
-            print("%s exists already; rename it before creating a new example config." % fname)
+            logger.error("%s exists already; rename it before creating a new example config." % fname)
             os._exit(1)
             return
 
@@ -161,7 +164,7 @@ class Config:
     def get_pipeline_table_is_stage(self):
         return self.get_pipeline().get('table_is_stage', False)
 
-    def connect_controller(self, table_name):
+    def connect_controller(self, table_name, timeshift=0):
         pipeline_name = self.get_pipeline_name()
 
         if pipeline_name.find("$TABLE") >= 0:
@@ -176,6 +179,7 @@ class Config:
                                protocol=DataCulpaValidator.HTTP,
                                dc_host=host,
                                dc_port=port,
+                               timeshift=timeshift,
                                queue_window=1000)
         return v
 
@@ -184,10 +188,15 @@ class SessionHistory:
     def __init__(self):
         self.history = {}
         self.config = None
+        self.write_enabled = True
 
     def set_config(self, config):
         assert isinstance(config, Config)
         self.config = config
+
+    def set_write_enabled(self, yesno):
+        self.write_enabled = yesno
+        return
 
     def add_history(self, table_name, field, value):
         assert self.config is not None
@@ -240,6 +249,12 @@ class SessionHistory:
 
     def save(self):
         assert self.config is not None
+        
+        if not self.write_enabled:
+            logger.warning("write_enabled is TURNED OFF for cache")
+            return
+        # endif
+
         # write to disk
         cache_path = self.config.get_sf_local_cache_file()
         assert cache_path is not None
@@ -261,9 +276,7 @@ class SessionHistory:
     
     def load(self):
         assert self.config is not None
-        print("load...")
-        time.sleep(1)
-
+        
         # read from disk
         cache_path = self.config.get_sf_local_cache_file()
         assert cache_path is not None
@@ -283,7 +296,7 @@ class SessionHistory:
 gCache = SessionHistory()
 
 def ConnectToSnowflake(config):
-    print("connecting...")
+    logger.info("connecting...")
     # Gets the version
     sf_context = snowflake.connector.connect(
         user=config.get_sf_user(),
@@ -303,7 +316,7 @@ def UseWarehouseDatabaseFromConfig(config, cursor):
             cursor.execute("USE database %s" % config.get_sf_database())
 
     except Exception as e:
-        print(e)
+        logger.error(e)
         os._exit(1)
 
     return
@@ -379,7 +392,7 @@ def DescribeTable(table, config, sf_context):
 
 
 def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
-    print(":fetching ... ", table)
+    logger.info("fetching ... %s", table)
     cs = sf_context.cursor()
     UseWarehouseDatabaseFromConfig(config, cs)
 
@@ -433,6 +446,10 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
     # check our history.
     gCache.load()
 
+    SF_DEBUG = os.environ.get('SF_DEBUG', False)
+    did_log_sf_debug = False
+    did_sql_limit = False
+
     marker_pair = gCache.get_history(table)
     if marker_pair is not None:
         (fk, fv) = marker_pair
@@ -443,9 +460,20 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
         # we want to do this only if we don't have a cached object for this table.
         if not gCache.has_history(table):
             sql += " LIMIT %s" % t_initial_limit
+            did_sql_limit = True
+
+
+    if SF_DEBUG and not did_sql_limit:
+        logger.warning("SF_DEBUG is set")
+        did_log_sf_debug = True
+
+        sql += " LIMIT 100"
+        did_sql_limit = True
+    # endif
 
     ts = time.time()
 
+    #logger.debug(sql)
     gCache.append_sql_log(table, sql)
     gCache.save()
 
@@ -458,30 +486,67 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
 
     cache_marker = None
     r = cs.fetchall()
-    r_count = 0
 
-    dc = config.connect_controller(table)
+    total_r_count = 0
+    timeshift_r_count = 0
+
+    print("\n\n\n\n")
+
+    # we want to set a timeshift.
+    last_timeshift = 0
+    dc = None # Delay opening the connection til we are ready. config.connect_controller(table, timeshift=0)
 
     for rr in r:
-        r_count += 1
+        total_r_count += 1
+        timeshift_r_count += 1
         df_entry = {}
+        this_timeshift = None
         for i in range(0, len(rr)):
             df_entry[field_names[i]] = rr[i]
 
             if field_names[i] == t_order_by:
-                cache_marker = rr[i]
+                this_timeshift = rr[i]
+        # endif
+
+        if this_timeshift is not None:
+            dt_now = datetime.now(timezone.utc)
+            dt_delta = dt_now - this_timeshift
+            dt_delta_ts = dt_delta.total_seconds()
+            if (abs(dt_delta_ts - last_timeshift) > 86400):
+                last_timeshift = dt_delta_ts
+                timeshift_r_count = 0
+                print("this_timeshift = ", dt_delta_ts)
+
+                meta['record_count'] = timeshift_r_count
+                if dc is not None:
+                    dc.queue_metadata(meta)
+                    (_queue_id, _result) = dc.queue_commit()
+                    if _result.get('had_error', True):
+                        logger.warning("Error: %s", _result)
+                # endif
+
+                dc = config.connect_controller(table, timeshift=last_timeshift)
+            # endif
+        # endif
+
+        if dc is None:
+            dc = config.connect_controller(table, timeshift=0)
+        #print(df_entry)
         dc.queue_record(df_entry)
+        cache_marker = this_timeshift
 
         # just for debugging
-        if os.environ.get('SF_DEBUG'):
-            if r_count > 100:
-                print("SF_DEBUG is set; stopping at 100 rows")
+        if SF_DEBUG:
+            if total_r_count > 100:
+                if not did_log_sf_debug:
+                    logger.warning("SF_DEBUG is set; stopping at 100 rows")
+                    did_log_sf_debug = True
                 break
 
-    if r_count > 0:
+    if total_r_count > 0:
         if cache_marker is None:
             if t_order_by is not None:
-                print("ERROR: we specified an order by constraint for caching that is missing from the table schema.")
+                logger.error("ERROR: we specified an order by constraint for caching that is missing from the table schema.")
                 os._exit(2)
         else:
             # OK, save it off...
@@ -490,14 +555,22 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
         # endif
     # endif
 
+    if SF_DEBUG:
+        logger.info("total_r_count = %s", total_r_count)
+
     cs.close()
 
-    meta['record_count'] = r_count
-
-    dc.queue_metadata(meta)
-    (_queue_id, _result) = dc.queue_commit()
-    print("server_result: __%s__" % _result)
-
+    meta['record_count'] = timeshift_r_count
+    if dc is not None:
+        dc.queue_metadata(meta)
+        (_queue_id, _result) = dc.queue_commit()
+        if _result.get('had_error', True):
+            logger.warning("Error: %s", _result)
+    else:
+        if total_r_count != 0:
+            logger.error("Never setup a connection to DC; total record count = %s", total_r_count)        
+    # FIXME: On error, rollback the cache
+    print("-------")
     return
 
 def CloseSnowflake(sf_context):
@@ -523,7 +596,10 @@ def _check_perms(table_name, config, sf_context):
     #select * from table_name limit 1;
     cs = sf_context.cursor()
     UseWarehouseDatabaseFromConfig(config, cs)
-    sql = "select * from PARTHENON.REUTERS.%s limit 1" % table_name
+    prefix = ""
+    if os.environ.get("SF_PREFIX") is not None:
+        prefix = os.environ.get("SF_PREFIX")
+    sql = "select * from %s%s limit 1" % (prefix, table_name)
     gCache.append_sql_log(table_name, sql)
     try:
         cs.execute(sql)
@@ -626,19 +702,18 @@ def do_test(filename):
         FatalError(1, "no tables listed to triage!")
         return
 
-    sf_context = ConnectToSnowflake(config)
-
     for t in table_list:
         print(t)
         #FetchTable(t, config, sf_context)
     
     return
 
-def do_run(filename, table_name):
-    print("run with config from file %s" % filename)
+def do_run(filename, table_name, nocache_mode):
+    logger.info("run with config from file %s" % filename)
     config = Config()
     config.load(filename)
     gCache.set_config(config)
+    gCache.set_write_enabled(not nocache_mode)
 
     # get the table list...
     table_list = config.get_sf_table_list()
@@ -669,8 +744,6 @@ def do_run(filename, table_name):
     return
 
 def main():
-    global gConfig
-
     ap = argparse.ArgumentParser()
     ap.add_argument("-e", "--env",
                     help="Use provided env file instead of default .env")
@@ -680,9 +753,10 @@ def main():
     ap.add_argument("--test", help="Test the configuration specified.")
     ap.add_argument("--run", help="Normal operation: run the pipeline")
 
+    ap.add_argument("--nocache", help="Do not move cache forward (for testing)", action='store_true')
 #    subparsers = ap.add_subparsers(help="aroo?")
 
-    # discover subcommand.
+    # FIXME: implement discover as a subcommand.
 #    ap_discover = subparsers.add_parser("--discover")
     ap.add_argument("--table", help="Operate on the specified table name")
 #    ap.add_argument("--perms", help="Check permissions")
@@ -713,7 +787,7 @@ def main():
             return
         elif args.run:
             dotenv.load_dotenv(env_path)
-            do_run(args.run, args.table)
+            do_run(args.run, args.table, args.nocache)
             return
         # endif
     # endif
