@@ -7,8 +7,8 @@
 # Copyright (c) 2020 Data Culpa, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to 
-# deal in the Software without restriction, including without limitation the 
+# of this software and associated documentation files (the "Software"), to
+# deal in the Software without restriction, including without limitation the
 # rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
 # sell copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
@@ -16,12 +16,12 @@
 # The above copyright notice and this permission notice shall be included in
 # all copies or substantial portions of the Software.
 #
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
 # OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
 # AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING 
-# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER 
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+# FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 # DEALINGS IN THE SOFTWARE.
 #
 
@@ -42,10 +42,12 @@ import snowflake.connector
 
 from datetime import datetime, timedelta, timezone
 
+from dataculpa import DataCulpaValidator
+
 if False:
     for k,v in  logging.Logger.manager.loggerDict.items():
         if k.find(".") > 0:
-            continue        
+            continue
         print(k)#, v)
         print("---")
 
@@ -60,8 +62,6 @@ for logger_name in ['snowflake.connector', 'urllib3', 'botocore', 'boto3']:
 logging.basicConfig(format='%(asctime)s %(message)s', level=logging.DEBUG)
 logger = logging.getLogger('dataculpa')
 
-from dataculpa import DataCulpaValidator
-
 
 #logging.basicConfig(format='%(asctime)s %(message)s', level=logging.WARN)
 
@@ -70,12 +70,12 @@ def FatalError(rc, message):
     sys.stderr.write(message)
     sys.stderr.write("\n")
     sys.stderr.flush()
-    os._exit(rc)
+    sys.exit(rc)
     return
 
 class Config:
     def __init__(self):
-        self._d = { 
+        self._d = {
                     'dataculpa_controller': {
                         'host': 'localhost',
                         'port': 7777,
@@ -101,7 +101,7 @@ class Config:
     def save(self, fname):
         if os.path.exists(fname):
             logger.error("%s exists already; rename it before creating a new example config." % fname)
-            os._exit(1)
+            sys.exit(1)
             return
 
         f = open(fname, 'w')
@@ -114,7 +114,7 @@ class Config:
             #print(f)
             self._d = yaml.load(f, yaml.SafeLoader)
             #print(self._d)
-        
+
         # No--just keep this in main.
         #dotenv.load_dotenv(env_file)
 
@@ -127,19 +127,19 @@ class Config:
 
     def get_snowflake(self):
         return self._d.get('configuration')
-    
+
     def get_sf_local_cache_file(self):
         return self.get_snowflake().get('session_history_cache', 'session_history_cache.db')
 
     def get_sf_user(self):
         return self.get_snowflake().get('user')
-    
+
     def get_sf_account(self):
         return self.get_snowflake().get('account')
-    
+
     def get_sf_password(self):
         return os.environ.get('SNOWFLAKE_PASSWORD')
-    
+
     def get_sf_region(self):
         return self.get_snowflake().get('region')
 
@@ -154,7 +154,7 @@ class Config:
 
     def get_controller(self):
         return self._d.get('dataculpa_controller')
-    
+
     def get_pipeline(self):
         return self._d.get('dataculpa_pipeline')
 
@@ -202,13 +202,13 @@ class SessionHistory:
         assert self.config is not None
         self.history[table_name] = (field, value)
         return
-    
+
     def has_history(self, table_name):
         return self.history.get(table_name) is not None
 
     def get_history(self, table_name):
         return self.history.get(table_name)
-    
+
     def _get_existing_tables(self, cache_path):
         assert self.config is not None
         _tables = []
@@ -223,16 +223,16 @@ class SessionHistory:
         _tables = self._get_existing_tables(cache_path)
 
         c = sqlite3.connect(cache_path)
-        if not ("cache" in _tables):
+        if "cache" not in _tables:
             c.execute("create table cache (object_name text unique, field_name text, field_value)")
 
-        if not ("sql_log" in _tables):
+        if "sql_log" not in _tables:
             c.execute("create table sql_log (sql text, object_name text, Timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
 
         c.commit()
 
         # endif
-    
+
         return
 
     def append_sql_log(self, table_name, sql_stmt):
@@ -249,7 +249,7 @@ class SessionHistory:
 
     def save(self):
         assert self.config is not None
-        
+
         if not self.write_enabled:
             logger.warning("write_enabled is TURNED OFF for cache")
             return
@@ -267,16 +267,16 @@ class SessionHistory:
             fv_pickle = pickle.dumps(fv)
             # Note that this might be dangerous if we add new fields later and we don't set them all...
             #print(table, fn, fv)
-            c.execute("insert or replace into cache (object_name, field_name, field_value) values (?,?,?)", 
+            c.execute("insert or replace into cache (object_name, field_name, field_value) values (?,?,?)",
                       (table, fn, fv_pickle))
 
         c.commit()
 
         return
-    
+
     def load(self):
         assert self.config is not None
-        
+
         # read from disk
         cache_path = self.config.get_sf_local_cache_file()
         assert cache_path is not None
@@ -317,7 +317,7 @@ def UseWarehouseDatabaseFromConfig(config, cursor):
 
     except Exception as e:
         logger.error(e)
-        os._exit(1)
+        sys.exit(1)
 
     return
 
@@ -335,7 +335,7 @@ def DiscoverTablesAndViews(config, sf_context):
     r = cs.fetchall()
     for _r in r:
         # https://docs.snowflake.com/en/sql-reference/sql/show-tables.html
-        # created datetime, table name, kind, database_name, schema_name... 
+        # created datetime, table name, kind, database_name, schema_name...
         # but there's a lot of other goodies in here too.
         #print("*** %40s %20s" % (_r[1], _r[0]))
         t_name = _r[1]
@@ -350,11 +350,11 @@ def DiscoverTablesAndViews(config, sf_context):
     view_names = []
     for _r in r:
         # https://docs.snowflake.com/en/sql-reference/sql/show-tables.html
-        # created datetime, table name, kind, database_name, schema_name... 
+        # created datetime, table name, kind, database_name, schema_name...
         # but there's a lot of other goodies in here too.
         #print("*** %40s %20s" % (_r[1], _r[0]))
         t_name = _r[1]
-        if not (t_name in view_names):
+        if t_name not in view_names:
             view_names.append(_r[1]) # FIXME: can exist across schemas and such... need to handle this better.
     # endfor
 
@@ -416,7 +416,7 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
 
     # build select.
     # ok we need to see if we have fetched this table before..
-    
+
     # build up min/maxes in case it's useful for debugging.
     if t_order_by is not None:
         global_min_sql = "select min(%s) from %s"  % (t_order_by, table)
@@ -547,7 +547,7 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
         if cache_marker is None:
             if t_order_by is not None:
                 logger.error("ERROR: we specified an order by constraint for caching that is missing from the table schema.")
-                os._exit(2)
+                sys.exit(2)
         else:
             # OK, save it off...
             gCache.add_history(table, t_order_by, cache_marker)
@@ -568,7 +568,7 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
             logger.warning("Error: %s", _result)
     else:
         if total_r_count != 0:
-            logger.error("Never setup a connection to DC; total record count = %s", total_r_count)        
+            logger.error("Never setup a connection to DC; total record count = %s", total_r_count)
     # FIXME: On error, rollback the cache
     print("-------")
     return
@@ -591,6 +591,7 @@ def do_init(filename):
     return
 
 def _check_perms(table_name, config, sf_context):
+    print("entered for %s" % table_name)
     # given the table name (or view name), we want to see if we can read anything from it.
     #select count(*) from table_name
     #select * from table_name limit 1;
@@ -600,6 +601,7 @@ def _check_perms(table_name, config, sf_context):
     if os.environ.get("SF_PREFIX") is not None:
         prefix = os.environ.get("SF_PREFIX")
     sql = "select * from %s%s limit 1" % (prefix, table_name)
+    print(sql)
     gCache.append_sql_log(table_name, sql)
     try:
         cs.execute(sql)
@@ -643,7 +645,7 @@ def do_discover(filename, table_name, perms_check):
             except:
                 traceback.print_exc()
                 pass
-            
+
             if js_obj is None:
                 print(n, js_str)
             else:
@@ -653,11 +655,12 @@ def do_discover(filename, table_name, perms_check):
         return
 
     (table_names, view_names) = DiscoverTablesAndViews(config, sf_context)
-    if len(table_names) == 0 and len(view_names):
+    if not table_names and not view_names:
         print("No tables or views found; check configuration and/or permissions?")
-        os._exit(2)
+        sys.exit(2)
     # endif
 
+    print()
     i = 1
     for t in table_names:
 
@@ -698,14 +701,14 @@ def do_test(filename):
 
     # get the table list...
     table_list = config.get_sf_table_list()
-    if len(table_list) == 0:
+    if not table_list:
         FatalError(1, "no tables listed to triage!")
         return
 
     for t in table_list:
         print(t)
         #FetchTable(t, config, sf_context)
-    
+
     return
 
 def do_run(filename, table_name, nocache_mode):
@@ -717,7 +720,7 @@ def do_run(filename, table_name, nocache_mode):
 
     # get the table list...
     table_list = config.get_sf_table_list()
-    if len(table_list) == 0:
+    if not table_list:
         FatalError(1, "no tables listed to triage!")
         return
 
@@ -734,7 +737,7 @@ def do_run(filename, table_name, nocache_mode):
 
         if table_name is not None:
             if t_name.lower() == table_name.lower():
-                FetchTable(t_name, config, sf_context, t_order_by, t_initial_limit)                
+                FetchTable(t_name, config, sf_context, t_order_by, t_initial_limit)
         else:
             # normal operation
             FetchTable(t_name, config, sf_context, t_order_by, t_initial_limit)
@@ -773,7 +776,7 @@ def main():
             env_path = args.env
         if not os.path.exists(env_path):
             sys.stderr.write("Error: missing env file at %s\n" % os.path.realpath(env_path))
-            os._exit(1)
+            sys.exit(1)
             return
         # endif
 
