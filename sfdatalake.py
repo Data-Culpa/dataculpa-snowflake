@@ -591,7 +591,6 @@ def do_init(filename):
     return
 
 def _check_perms(table_name, config, sf_context):
-    print("entered for %s" % table_name)
     # given the table name (or view name), we want to see if we can read anything from it.
     #select count(*) from table_name
     #select * from table_name limit 1;
@@ -601,7 +600,7 @@ def _check_perms(table_name, config, sf_context):
     if os.environ.get("SF_PREFIX") is not None:
         prefix = os.environ.get("SF_PREFIX")
     sql = "select * from %s%s limit 1" % (prefix, table_name)
-    print(sql)
+
     gCache.append_sql_log(table_name, sql)
     try:
         cs.execute(sql)
@@ -623,7 +622,7 @@ def _check_perms(table_name, config, sf_context):
             # tighten it up
             _exvalue = exc[-2]
 
-        return False, "error getting a row: %s" % _exvalue
+        return False, "error getting a row: %s [sql = _%s_]" % (_exvalue, sql)
     return False, "should never get here!"
 
 def do_discover(filename, table_name, perms_check):
@@ -672,6 +671,9 @@ def do_discover(filename, table_name, perms_check):
         # endif
 
         print(i, ": Found table:", t, err_str)
+        if err_str != "":
+            print("\n")
+            
         i += 1
 
         #DescribeTable(config, sf_context, config.get_sf_database(), t)
