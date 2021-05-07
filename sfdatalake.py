@@ -514,10 +514,10 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
             dt_delta_ts = dt_delta.total_seconds()
             if (abs(dt_delta_ts - last_timeshift) > 86400):
                 last_timeshift = dt_delta_ts
-                timeshift_r_count = 0
                 print("this_timeshift = ", dt_delta_ts)
 
                 meta['record_count'] = timeshift_r_count
+                timeshift_r_count = 0
                 if dc is not None:
                     dc.queue_metadata(meta)
                     (_queue_id, _result) = dc.queue_commit()
@@ -673,7 +673,7 @@ def do_discover(filename, table_name, perms_check):
         print(i, ": Found table:", t, err_str)
         if err_str != "":
             print("\n")
-            
+
         i += 1
 
         #DescribeTable(config, sf_context, config.get_sf_database(), t)
