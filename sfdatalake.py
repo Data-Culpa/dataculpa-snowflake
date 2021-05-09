@@ -440,7 +440,7 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
         meta['count_%s' % table] = count_r
     # endif
 
-    fields_str = ",".join(field_names)
+    fields_str = ", ".join(field_names)
     sql = "select %s from %s " % (fields_str, table)
 
     # check our history.
@@ -481,8 +481,8 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
 
     dt = time.time() - ts
 
-    meta['sql_query'] = sql
-    meta['sql_delta_time'] = dt
+    meta['snowflake_sql_query'] = sql
+    meta['snowflake_sql_processing_time'] = dt
 
     cache_marker = None
     r = cs.fetchall()
