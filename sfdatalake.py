@@ -36,6 +36,7 @@ import sqlite3
 import sys
 import time
 import traceback
+import dataculpa
 import yaml
 
 import dotenv
@@ -166,13 +167,14 @@ class Config:
     def get_pipeline_table_is_stage(self):
         return self.get_pipeline().get('table_is_stage', False)
 
-    def test_controller_connection_is_ok(self, table_name):
+    def test_controller_connection_is_ok(self):
         try:
-            v = self.connect_controller(table_name)
+            v = self.connect_controller("dummy-value")
             rc = v.test_connection()
             if rc == 0:
                 return True # success!
         except:
+            traceback.print_exc()
             return False
 
         return False
@@ -498,7 +500,6 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
     meta['snowflake_sql_processing_time'] = dt
 
     cache_marker = None
-    r = cs.fetchall()
 
     total_r_count = 0
     timeshift_r_count = 0
@@ -509,53 +510,59 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
     last_timeshift = 0
     dc = None # Delay opening the connection til we are ready. config.connect_controller(table, timeshift=0)
 
-    for rr in r:
-        total_r_count += 1
-        timeshift_r_count += 1
-        df_entry = {}
-        this_timeshift = None
-        for i in range(0, len(rr)):
-            df_entry[field_names[i]] = rr[i]
+    while True:
+        r = cs.fetchmany(1000)
+        if r is None or len(r) == 0:
+            break
+        
+        for rr in r:
+            total_r_count += 1
+            timeshift_r_count += 1
+            df_entry = {}
+            this_timeshift = None
+            for i in range(0, len(rr)):
+                df_entry[field_names[i]] = rr[i]
 
-            if field_names[i] == t_order_by:
-                this_timeshift = rr[i]
-        # endif
-
-        if this_timeshift is not None:
-            dt_now = datetime.now(timezone.utc)
-            dt_delta = dt_now - this_timeshift
-            dt_delta_ts = dt_delta.total_seconds()
-            if (abs(dt_delta_ts - last_timeshift) > 86400):
-                last_timeshift = dt_delta_ts
-                print("this_timeshift = ", dt_delta_ts)
-
-                meta['record_count'] = timeshift_r_count
-                timeshift_r_count = 0
-                if dc is not None:
-                    dc.queue_metadata(meta)
-                    (_queue_id, _result) = dc.queue_commit()
-                    if _result.get('had_error', True):
-                        logger.warning("Error: %s", _result)
-                # endif
-
-                dc = config.connect_controller(table, timeshift=last_timeshift)
+                if field_names[i] == t_order_by:
+                    this_timeshift = rr[i]
             # endif
-        # endif
 
-        if dc is None:
-            dc = config.connect_controller(table, timeshift=0)
-        #print(df_entry)
-        dc.queue_record(df_entry)
-        cache_marker = this_timeshift
+            if this_timeshift is not None:
+                dt_now = datetime.now(timezone.utc)
+                dt_delta = dt_now - this_timeshift
+                dt_delta_ts = dt_delta.total_seconds()
+                if (abs(dt_delta_ts - last_timeshift) > 86400):
+                    last_timeshift = dt_delta_ts
+                    print("this_timeshift = ", dt_delta_ts)
 
-        # just for debugging
-        if SF_DEBUG:
-            if total_r_count > 100:
-                if not did_log_sf_debug:
-                    logger.warning("SF_DEBUG is set; stopping at 100 rows")
-                    did_log_sf_debug = True
-                break
+                    meta['record_count'] = timeshift_r_count
+                    timeshift_r_count = 0
+                    if dc is not None:
+                        dc.queue_metadata(meta)
+                        (_queue_id, _result) = dc.queue_commit()
+                        if _result.get('had_error', True):
+                            logger.warning("Error: %s", _result)
+                    # endif
 
+                    dc = config.connect_controller(table, timeshift=last_timeshift)
+                # endif
+            # endif
+
+            if dc is None:
+                dc = config.connect_controller(table, timeshift=0)
+            #print(df_entry)
+            dc.queue_record(df_entry)
+            cache_marker = this_timeshift
+
+            # just for debugging
+            if SF_DEBUG:
+                if total_r_count > 100:
+                    if not did_log_sf_debug:
+                        logger.warning("SF_DEBUG is set; stopping at 100 rows")
+                        did_log_sf_debug = True
+                    break
+
+    # endwhile
     if total_r_count > 0:
         if cache_marker is None:
             if t_order_by is not None:
@@ -731,7 +738,7 @@ def do_run(filename, table_name, nocache_mode):
     config = Config()
     config.load(filename)
 
-    is_OK = config.test_controller_connection_is_ok(table_name)
+    is_OK = config.test_controller_connection_is_ok()
     if not is_OK:
         FatalError(2, "Couldn't connect to Data Culpa Validator for test connection; aborting")
         return
