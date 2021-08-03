@@ -25,6 +25,8 @@
 # DEALINGS IN THE SOFTWARE.
 #
 
+# File hash: $Id$
+
 import argparse
 import json
 import logging
@@ -163,6 +165,17 @@ class Config:
 
     def get_pipeline_table_is_stage(self):
         return self.get_pipeline().get('table_is_stage', False)
+
+    def test_controller_connection_is_ok(self, table_name):
+        try:
+            v = self.connect_controller(table_name)
+            rc = v.test_connection()
+            if rc == 0:
+                return True # success!
+        except:
+            return False
+
+        return False
 
     def connect_controller(self, table_name, timeshift=0):
         pipeline_name = self.get_pipeline_name()
@@ -717,6 +730,12 @@ def do_run(filename, table_name, nocache_mode):
     logger.info("run with config from file %s" % filename)
     config = Config()
     config.load(filename)
+
+    is_OK = config.test_controller_connection_is_ok(table_name)
+    if not is_OK:
+        FatalError(2, "Couldn't connect to Data Culpa Validator for test connection; aborting")
+        return
+
     gCache.set_config(config)
     gCache.set_write_enabled(not nocache_mode)
 
@@ -732,6 +751,10 @@ def do_run(filename, table_name, nocache_mode):
         t_name          = t.get('table')
         t_order_by      = t.get('desc_order_by')
         t_initial_limit = t.get('initial_limit')
+        t_timeshift     = t.get('timeshift', False) # True/False
+        
+        if t_timeshift != True:
+            t_timeshift = False
 
         # little safeguard while we test
         if t_initial_limit is None:
