@@ -4,7 +4,7 @@
 # sfdatalake.py
 # Data Culpa Snowflake Connector
 #
-# Copyright (c) 2020 Data Culpa, Inc.
+# Copyright (c) 2020-2021 Data Culpa, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to
@@ -80,8 +80,10 @@ class Config:
     def __init__(self):
         self._d = {
                     'dataculpa_controller': {
+                        'protocol': 'http for local Validator or https when using Data Culpa Validator Cloud',
                         'host': 'localhost',
                         'port': 7777,
+                        'api_user': 'user_name created in Validator'
                     },
                     'configuration': {
                         'user': '[required] user',
@@ -143,6 +145,9 @@ class Config:
     def get_sf_password(self):
         return os.environ.get('SNOWFLAKE_PASSWORD')
 
+    def get_dc_api_secret(self):
+        return os.environ.get('DC_API_SECRET')
+
     def get_sf_region(self):
         return self.get_snowflake().get('region')
 
@@ -186,14 +191,18 @@ class Config:
             pipeline_name = pipeline_name.replace("$TABLE", table_name)
 
         cc = self.get_controller()
+        protocol = cc.get('protocol', 'https')
         host = cc.get('host')
         port = cc.get('port')
+        user = cc.get('api_user')
+        secret = self.get_dc_api_secret()
 
-        # FIXME: load Data Culpa secret
         v = DataCulpaValidator(pipeline_name,
-                               protocol=DataCulpaValidator.HTTP,
+                               protocol=protocol,
                                dc_host=host,
                                dc_port=port,
+                               api_access_id=user,
+                               api_secret=secret,
                                timeshift=timeshift,
                                queue_window=1000)
         return v
@@ -604,7 +613,7 @@ def do_init(filename):
 
     # Put out an .env template too.
     with open(filename + ".env", "w") as f:
-        #f.write("DC_CONTROLLER_SECRET=empty\n")
+        f.write("DC_API_SECRET=empty\n")
         f.write("SNOWFLAKE_PASSWORD=[required]\n")
         f.close()
 
