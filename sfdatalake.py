@@ -41,7 +41,7 @@ import yaml
 
 import dotenv
 
-import snowflake.connector
+import snowflake.connector # pylint: disable=no-name-in-module disable=import-error
 
 from datetime import datetime, timedelta, timezone
 
@@ -172,9 +172,9 @@ class Config:
     def get_pipeline_table_is_stage(self):
         return self.get_pipeline().get('table_is_stage', False)
 
-    def test_controller_connection_is_ok(self):
+    def test_controller_connection_is_ok(self, table_name):
         try:
-            v = self.connect_controller("dummy-value")
+            v = self.connect_controller(table_name)
             rc = v.test_connection()
             if rc == 0:
                 return True # success!
@@ -183,6 +183,10 @@ class Config:
             return False
 
         return False
+
+    def get_last_timestamp(self, table_name):
+        v = self.connect_controller(table_name)
+        return v.queue_check_last_record_time()
 
     def connect_controller(self, table_name, timeshift=0):
         pipeline_name = self.get_pipeline_name()
@@ -208,30 +212,13 @@ class Config:
         return v
 
 
-class SessionHistory:
+class AccessHistory:
     def __init__(self):
-        self.history = {}
         self.config = None
-        self.write_enabled = True
 
     def set_config(self, config):
         assert isinstance(config, Config)
         self.config = config
-
-    def set_write_enabled(self, yesno):
-        self.write_enabled = yesno
-        return
-
-    def add_history(self, table_name, field, value):
-        assert self.config is not None
-        self.history[table_name] = (field, value)
-        return
-
-    def has_history(self, table_name):
-        return self.history.get(table_name) is not None
-
-    def get_history(self, table_name):
-        return self.history.get(table_name)
 
     def _get_existing_tables(self, cache_path):
         assert self.config is not None
@@ -247,16 +234,10 @@ class SessionHistory:
         _tables = self._get_existing_tables(cache_path)
 
         c = sqlite3.connect(cache_path)
-        if "cache" not in _tables:
-            c.execute("create table cache (object_name text unique, field_name text, field_value)")
-
         if "sql_log" not in _tables:
             c.execute("create table sql_log (sql text, object_name text, Timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)")
 
         c.commit()
-
-        # endif
-
         return
 
     def append_sql_log(self, table_name, sql_stmt):
@@ -271,58 +252,14 @@ class SessionHistory:
         c.commit()
         return
 
-    def save(self):
-        assert self.config is not None
-
-        if not self.write_enabled:
-            logger.warning("write_enabled is TURNED OFF for cache")
-            return
-        # endif
-
-        # write to disk
-        cache_path = self.config.get_sf_local_cache_file()
-        assert cache_path is not None
-
-        self._handle_new_cache(cache_path)
-
-        c = sqlite3.connect(cache_path)
-        for table, f_pair in self.history.items():
-            (fn, fv) = f_pair
-            fv_pickle = pickle.dumps(fv)
-            # Note that this might be dangerous if we add new fields later and we don't set them all...
-            #print(table, fn, fv)
-            c.execute("insert or replace into cache (object_name, field_name, field_value) values (?,?,?)",
-                      (table, fn, fv_pickle))
-
-        c.commit()
-
-        return
-
-    def load(self):
-        assert self.config is not None
-
-        # read from disk
-        cache_path = self.config.get_sf_local_cache_file()
-        assert cache_path is not None
-
-        self._handle_new_cache(cache_path)
-
-        c = sqlite3.connect(cache_path)
-        r = c.execute("select object_name, field_name, field_value from cache")
-        for row in r:
-            (table, fn, fv_pickle) = row
-            fv = pickle.loads(fv_pickle)
-            self.add_history(table, fn, fv)
-        # endfor
-        return
 
 
-gCache = SessionHistory()
+gCache = AccessHistory()
 
 def ConnectToSnowflake(config):
     logger.info("connecting...")
     # Gets the version
-    sf_context = snowflake.connector.connect(
+    sf_context = snowflake.connector.connect( # pylint: disable=no-member
         user=config.get_sf_user(),
         password=config.get_sf_password(),
         account=config.get_sf_account()
@@ -467,22 +404,19 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
     fields_str = ", ".join(field_names)
     sql = "select %s from %s " % (fields_str, table)
 
-    # check our history.
-    gCache.load()
-
     SF_DEBUG = os.environ.get('SF_DEBUG', False)
     did_log_sf_debug = False
     did_sql_limit = False
 
-    marker_pair = gCache.get_history(table)
-    if marker_pair is not None:
-        (fk, fv) = marker_pair
-        sql += " WHERE %s > '%s'" % (fk, fv)
+    existing_ts = config.get_last_timestamp()
+    print("existing_ts = __%s__" % existing_ts)
     if t_order_by is not None:
+        if existing_ts is not None:
+            sql += " WHERE %s > '%s'" % (t_order_by, existing_ts)
         sql += " ORDER BY %s DESC" % t_order_by
     if t_initial_limit is not None:
         # we want to do this only if we don't have a cached object for this table.
-        if not gCache.has_history(table):
+        if existing_ts is None:
             sql += " LIMIT %s" % t_initial_limit
             did_sql_limit = True
 
@@ -497,9 +431,7 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
 
     ts = time.time()
 
-    #logger.debug(sql)
     gCache.append_sql_log(table, sql)
-    gCache.save()
 
     cs.execute(sql)
 
@@ -512,8 +444,6 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
 
     total_r_count = 0
     timeshift_r_count = 0
-
-    print("\n\n\n\n")
 
     # we want to set a timeshift.
     last_timeshift = 0
@@ -577,10 +507,6 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
             if t_order_by is not None:
                 logger.error("ERROR: we specified an order by constraint for caching that is missing from the table schema.")
                 sys.exit(2)
-        else:
-            # OK, save it off...
-            gCache.add_history(table, t_order_by, cache_marker)
-            gCache.save()
         # endif
     # endif
 
@@ -747,13 +673,12 @@ def do_run(filename, table_name, nocache_mode):
     config = Config()
     config.load(filename)
 
-    is_OK = config.test_controller_connection_is_ok()
+    is_OK = config.test_controller_connection_is_ok(table_name)
     if not is_OK:
         FatalError(2, "Couldn't connect to Data Culpa Validator for test connection; aborting")
         return
 
     gCache.set_config(config)
-    gCache.set_write_enabled(not nocache_mode)
 
     # get the table list...
     table_list = config.get_sf_table_list()
