@@ -408,7 +408,7 @@ def FetchTable(table, config, sf_context, t_order_by, t_initial_limit):
     did_log_sf_debug = False
     did_sql_limit = False
 
-    existing_ts = config.get_last_timestamp()
+    existing_ts = config.get_last_timestamp(table)
     print("existing_ts = __%s__" % existing_ts)
     if t_order_by is not None:
         if existing_ts is not None:
@@ -673,10 +673,11 @@ def do_run(filename, table_name, nocache_mode):
     config = Config()
     config.load(filename)
 
-    is_OK = config.test_controller_connection_is_ok(table_name)
-    if not is_OK:
-        FatalError(2, "Couldn't connect to Data Culpa Validator for test connection; aborting")
-        return
+    if table_name is not None:
+        is_OK = config.test_controller_connection_is_ok(table_name)
+        if not is_OK:
+            FatalError(2, "Couldn't connect to Data Culpa Validator for test connection; aborting")
+            return
 
     gCache.set_config(config)
 
